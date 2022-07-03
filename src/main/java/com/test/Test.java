@@ -13,35 +13,51 @@ import org.apache.flink.types.Row;
  */
 public class Test {
 
-    public static void main(String[] args) throws Exception {
-        // create environments of both APIs
+    public static void main(String[] args) {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setRuntimeMode(RuntimeExecutionMode.BATCH);
 
         StreamTableEnvironment tableEnv = StreamTableEnvironment.create(env);
+        tableEnv.createFunction("toLager", ToLager.class);
+        tableEnv.createFunction("toPreis", ToPreis.class);
 
-        // create a DataStream
-        DataStream<Row> dataStream = env.fromElements(
-                Row.of("11111", 1, "1120"),
-                Row.of("11111", 3, "1110"),
-                Row.of("11112", 2, "Test"));
+        DataStream<Row> bestandStream = env.fromElements(
+                Row.of("11111", "222222", "lager1", 1),
+                Row.of("11111", "222222", "lager2", 2),
+                Row.of("11112", "222223", "lager1", 5));
 
-        tableEnv.createFunction("toUser", ToUser.class);
+        DataStream<Row> preisStream = env.fromElements(
+                Row.of("11111", "222222", "3333333", 10.5),
+                Row.of("11111", "222222", "3333334", 9.99),
+                Row.of("11111", "222223", "3333333",  20.0),
+                Row.of("11112", "222222", "3333333",  49.99));
 
-        // interpret the insert-only DataStream as a Table
-        Table inputTable = tableEnv.fromDataStream(dataStream).as("artikelNummer", "bestand", "lager");
+        DataStream<Row> zuweisungStream = env.fromElements(
+                Row.of("11111", "222222"),
+                Row.of("11111", "222223"),
+                Row.of("11112", "222222"));
 
-        // register the Table object as a view and query it
-        // the query contains an aggregation that produces updates
-        tableEnv.createTemporaryView("InputTable", inputTable);
+        Table bestand = tableEnv.fromDataStream(bestandStream).as("artikelNummer", "partnerNummer", "lager", "menge");
+        tableEnv.createTemporaryView("bestand", bestand);
+
+        Table preis = tableEnv.fromDataStream(preisStream).as("artikelNummer", "partnerNummer", "lieferant", "wert");
+        tableEnv.createTemporaryView("preis", preis);
+
+        Table zuweisung = tableEnv.fromDataStream(zuweisungStream).as("artikelNummer", "partnerNummer");
+        tableEnv.createTemporaryView("zuweisung", zuweisung);
+
         Table resultTable = tableEnv.sqlQuery(
-                "SELECT artikelNummer, collect(toUser(lager, bestand)) as lager FROM InputTable group by artikelNummer");
+            "SELECT " +
+                    "zuweisung.artikelNummer, " +
+                    "zuweisung.partnerNummer, " +
+                    "collect(toLager(bestand.lager, bestand.menge)) as bestand, " +
+                    "collect(toPreis(preis.lieferant, preis.wert)) as preis " +
+                    "from zuweisung " +
+                    "join preis on zuweisung.artikelNummer = preis.artikelNummer and zuweisung.partnerNummer = preis.partnerNummer " +
+                    "join bestand on zuweisung.artikelNummer = bestand.artikelNummer and zuweisung.partnerNummer = preis.partnerNummer " +
+                    "group by zuweisung.artikelNummer, zuweisung.partnerNummer"
+        );
 
-        // interpret the updating Table as a changelog DataStream
-        DataStream<Row> resultStream = tableEnv.toChangelogStream(resultTable);
-
-        // add a printing sink and execute in DataStream API
-        resultStream.print();
-        env.execute();
+        resultTable.execute().print();
     }
 }
